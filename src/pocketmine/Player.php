@@ -115,6 +115,7 @@ use pocketmine\network\mcpe\protocol\BlockPickRequestPacket;
 use pocketmine\network\mcpe\protocol\BookEditPacket;
 use pocketmine\network\mcpe\protocol\ChunkRadiusUpdatedPacket;
 use pocketmine\network\mcpe\protocol\ContainerClosePacket;
+use pocketmine\network\mcpe\protocol\CreativeItemsListPacket;
 use pocketmine\network\mcpe\protocol\DataPacket;
 use pocketmine\network\mcpe\protocol\DisconnectPacket;
 use pocketmine\network\mcpe\protocol\InteractPacket;
@@ -1399,7 +1400,7 @@ class Player extends Human implements CommandSender, ChunkLoader, IPlayer{
 		}
 
 		$this->sendSettings();
-		$this->inventory->sendCreativeContents();
+//		$this->inventory->sendCreativeContents();
 
 		return true;
 	}
@@ -1857,6 +1858,7 @@ class Player extends Human implements CommandSender, ChunkLoader, IPlayer{
 
 	protected function initEntity() : void{
 		parent::initEntity();
+
 		$this->addDefaultWindows();
 	}
 
@@ -2174,6 +2176,7 @@ class Player extends Human implements CommandSender, ChunkLoader, IPlayer{
 		$spawnPosition = $this->getSpawn();
 
 		$pk = new StartGamePacket();
+
 		$pk->entityUniqueId = $this->id;
 		$pk->entityRuntimeId = $this->id;
 		$pk->playerGamemode = Player::getClientFriendlyGamemode($this->gamemode);
@@ -2230,10 +2233,17 @@ class Player extends Human implements CommandSender, ChunkLoader, IPlayer{
 		$this->sendPotionEffects($this);
 		$this->sendData($this);
 
+		if($this->getProtocol() >= ProtocolInfo::PROTOCOL_16) {
+            $creativeItemsListPacket = new CreativeItemsListPacket();
+            $this->dataPacket($creativeItemsListPacket);
+        }
+
 		$this->sendAllInventories();
+
+
 		$this->inventory->sendCreativeContents();
 		$this->inventory->sendHeldItem($this);
-		$this->dataPacket($this->server->getCraftingManager()->getCraftingDataPacket());
+		$this->dataPacket($this->server->getCraftingManager()->getCraftingDataPacket($this->getProtocol()));
 
 		$this->server->addOnlinePlayer($this);
 		$this->server->sendFullPlayerListData($this);
@@ -2745,6 +2755,11 @@ class Player extends Human implements CommandSender, ChunkLoader, IPlayer{
 			return true;
 		}
 
+		if($packet->action === InteractPacket::ACTION_OPEN_INVENTORY and $this->protocol >= ProtocolInfo::PROTOCOL_16) {
+		    $this->addWindow($this->getInventory());
+		    return true;
+        }
+
 		$this->doCloseInventory();
 
 		$target = $this->level->getEntity($packet->target);
@@ -2970,6 +2985,10 @@ class Player extends Human implements CommandSender, ChunkLoader, IPlayer{
 
 	public function handleContainerClose(ContainerClosePacket $packet) : bool{
 		if(!$this->spawned or $packet->windowId === 0){
+		    if($packet->windowId === 0 and isset($this->windowIndex[$packet->windowId]) and $this->getProtocol() >= ProtocolInfo::PROTOCOL_16) {
+		        $this->doCloseInventory();
+            }
+
 			return true;
 		}
 
@@ -3520,7 +3539,7 @@ class Player extends Human implements CommandSender, ChunkLoader, IPlayer{
 	 * @param TextContainer|string $message Message to be broadcasted
 	 * @param string               $reason Reason showed in console
 	 */
-	final public function close($message = "", string $reason = "generic reason", bool $notify = true) : void{
+	final public function close($message = "", string $reason = "generic reason", bool $notify = true): void {
 		if($this->isConnected() and !$this->closed){
 			if($notify and strlen($reason) > 0){
 				$pk = new DisconnectPacket();
@@ -3850,15 +3869,12 @@ class Player extends Human implements CommandSender, ChunkLoader, IPlayer{
 	 * @return void
 	 */
 	protected function addDefaultWindows(){
-		$this->addWindow($this->getInventory(), ContainerIds::INVENTORY, true);
+        $this->cursorInventory = new PlayerCursorInventory($this);
+        $this->craftingGrid = new CraftingGrid($this, CraftingGrid::SIZE_SMALL);
 
-		$this->addWindow($this->getArmorInventory(), ContainerIds::ARMOR, true);
-
-		$this->cursorInventory = new PlayerCursorInventory($this);
-		$this->addWindow($this->cursorInventory, ContainerIds::UI, true);
-
-		$this->craftingGrid = new CraftingGrid($this, CraftingGrid::SIZE_SMALL);
-
+        $this->addWindow($this->getInventory(), ContainerIds::INVENTORY, true);
+        $this->addWindow($this->getArmorInventory(), ContainerIds::ARMOR, true);
+        $this->addWindow($this->cursorInventory, ContainerIds::UI, true);
 		//TODO: more windows
 	}
 
@@ -3887,6 +3903,10 @@ class Player extends Human implements CommandSender, ChunkLoader, IPlayer{
 
 				$inventory->clearAll();
 			}
+
+			if($this->getProtocol() >= ProtocolInfo::PROTOCOL_16) {
+			    $inventory->onClose($this);
+            }
 		}
 
 		if($this->craftingGrid->getGridWidth() > CraftingGrid::SIZE_SMALL){
@@ -3922,7 +3942,8 @@ class Player extends Human implements CommandSender, ChunkLoader, IPlayer{
 	 * @throws \InvalidStateException if trying to add a window without forceID when no slots are free
 	 */
 	public function addWindow(Inventory $inventory, int $forceId = null, bool $isPermanent = false) : int{
-		if(($id = $this->getWindowId($inventory)) !== ContainerIds::NONE){
+        if(($id = $this->getWindowId($inventory)) !== ContainerIds::NONE){
+            $inventory->open($this); // TEST !!!!
 			return $id;
 		}
 
@@ -3942,7 +3963,7 @@ class Player extends Human implements CommandSender, ChunkLoader, IPlayer{
 			}
 		}
 
-		$this->windowIndex[$cnt] = $inventory;
+        $this->windowIndex[$cnt] = $inventory;
 		$this->windows[spl_object_hash($inventory)] = $cnt;
 		if($inventory->open($this)){
 			if($isPermanent){
@@ -3967,7 +3988,7 @@ class Player extends Human implements CommandSender, ChunkLoader, IPlayer{
 	public function removeWindow(Inventory $inventory, bool $force = false){
 		$id = $this->windows[$hash = spl_object_hash($inventory)] ?? null;
 
-		if($id !== null and !$force and isset($this->permanentWindows[$id])){
+		if($id !== null and !$force and isset($this->permanentWindows[$id])) {
 			throw new \InvalidArgumentException("Cannot remove fixed window $id (" . get_class($inventory) . ") from " . $this->getName());
 		}
 

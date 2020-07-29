@@ -71,13 +71,29 @@ class InventoryTransactionPacket extends DataPacket{
 	/** @var \stdClass */
 	public $trData;
 
-	protected function decodePayload(){
+	protected function decodePayload() {
+	    if($this->protocol >= ProtocolInfo::PROTOCOL_16) {
+	        $genericNetworkId = $this->getUnsignedVarInt();
+	        if($genericNetworkId !== 0) {
+	            for($i = 0, $j = $this->getUnsignedVarInt(); $i < $j; $i++) {
+	                $this->getUnsignedVarInt(); // Inventory id
+                    for($k = 0, $l = $this->getUnsignedVarInt(); $k < $l; $k++) {
+                        $this->getUnsignedVarInt(); // Slot
+                    }
+                }
+            }
+        }
+
 		$this->transactionType = $this->getUnsignedVarInt();
+	    if($this->protocol >= ProtocolInfo::PROTOCOL_16) {
+	        $this->getBool(); // ???
+        }
 
 		for($i = 0, $count = $this->getUnsignedVarInt(); $i < $count; ++$i){
 			$this->actions[] = $action = (new NetworkInventoryAction())->read($this);
 
 			if(
+			    $this->protocol < ProtocolInfo::PROTOCOL_16 and
 				$action->sourceType === NetworkInventoryAction::SOURCE_CONTAINER and
 				$action->windowId === ContainerIds::UI and
 				$action->inventorySlot === 50 and
@@ -94,6 +110,11 @@ class InventoryTransactionPacket extends DataPacket{
 				)
 			){
 				$this->isCraftingPart = true;
+				if($this->protocol >= ProtocolInfo::PROTOCOL_16) {
+                    if($action->windowId === NetworkInventoryAction::SOURCE_TYPE_CRAFTING_RESULT){
+                        $this->isFinalCraftingPart = true;
+                    }
+                }
 			}
 		}
 

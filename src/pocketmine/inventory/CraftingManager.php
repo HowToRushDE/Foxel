@@ -26,6 +26,7 @@ namespace pocketmine\inventory;
 use pocketmine\item\Item;
 use pocketmine\network\mcpe\protocol\BatchPacket;
 use pocketmine\network\mcpe\protocol\CraftingDataPacket;
+use pocketmine\network\mcpe\protocol\ProtocolInfo;
 use pocketmine\Server;
 use pocketmine\timings\Timings;
 use function array_map;
@@ -35,16 +36,19 @@ use function json_encode;
 use function usort;
 use const DIRECTORY_SEPARATOR;
 
-class CraftingManager{
+class CraftingManager {
+
 	/** @var ShapedRecipe[][] */
 	protected $shapedRecipes = [];
 	/** @var ShapelessRecipe[][] */
 	protected $shapelessRecipes = [];
 	/** @var FurnaceRecipe[] */
 	protected $furnaceRecipes = [];
+	/** @var BrewingRecipe[] */
+	protected $brewingRecipes = [];
 
-	/** @var BatchPacket|null */
-	private $craftingDataCache;
+	/** @var BatchPacket[]|null */
+	private $craftingDataCache = null;
 
 	public function __construct(){
 		$this->init();
@@ -89,6 +93,11 @@ class CraftingManager{
 			}
 		}
 
+		$brewingRecipes = json_decode(file_get_contents(\pocketmine\RESOURCE_PATH . "vanilla" . DIRECTORY_SEPARATOR . "potion_recipes.json"), true);
+		foreach ($brewingRecipes as ["fromPotionId" => $fromPotionId, "ingredient" => $ingredient, "toPotionId" => $toPotionId]) {
+            $this->registerRecipe(new BrewingRecipe($fromPotionId, $ingredient, $toPotionId));
+        }
+
 		$this->buildCraftingDataCache();
 	}
 
@@ -97,44 +106,54 @@ class CraftingManager{
 	 */
 	public function buildCraftingDataCache() : void{
 		Timings::$craftingDataCacheRebuildTimer->startTiming();
-		$pk = new CraftingDataPacket();
-		$pk->cleanRecipes = true;
+		foreach (ProtocolInfo::SUPPORTED_PROTOCOLS as $protocol) {
+            $pk = new CraftingDataPacket();
+            $pk->cleanRecipes = true;
+            $pk->protocol = $protocol;
 
-		foreach($this->shapelessRecipes as $list){
-			foreach($list as $recipe){
-				$pk->addShapelessRecipe($recipe);
-			}
-		}
-		foreach($this->shapedRecipes as $list){
-			foreach($list as $recipe){
-				$pk->addShapedRecipe($recipe);
-			}
-		}
+            foreach($this->shapelessRecipes as $list){
+                foreach($list as $recipe){
+                    $pk->addShapelessRecipe($recipe);
+                }
+            }
+            foreach($this->shapedRecipes as $list){
+                foreach($list as $recipe){
+                    $pk->addShapedRecipe($recipe);
+                }
+            }
 
-		foreach($this->furnaceRecipes as $recipe){
-			$pk->addFurnaceRecipe($recipe);
-		}
+            foreach($this->furnaceRecipes as $recipe){
+                $pk->addFurnaceRecipe($recipe);
+            }
 
-		$pk->encode();
+            foreach ($this->brewingRecipes as $recipe) {
+                $pk->addPotionTypeRecipe($recipe->toPotionTypeRecipe());
+            }
 
-		$batch = new BatchPacket();
-		$batch->addPacket($pk);
-		$batch->setCompressionLevel(Server::getInstance()->networkCompressionLevel);
-		$batch->encode();
+            $pk->encode();
 
-		$this->craftingDataCache = $batch;
+            $batch = new BatchPacket();
+            $batch->protocol = $protocol;
+
+            $batch->addPacket($pk);
+            $batch->setCompressionLevel(Server::getInstance()->networkCompressionLevel);
+            $batch->encode();
+
+            $this->craftingDataCache[$protocol] = $batch;
+        }
+
 		Timings::$craftingDataCacheRebuildTimer->stopTiming();
 	}
 
 	/**
 	 * Returns a pre-compressed CraftingDataPacket for sending to players. Rebuilds the cache if it is not found.
 	 */
-	public function getCraftingDataPacket() : BatchPacket{
+	public function getCraftingDataPacket(int $protocol = ProtocolInfo::CURRENT_PROTOCOL) : BatchPacket{
 		if($this->craftingDataCache === null){
 			$this->buildCraftingDataCache();
 		}
 
-		return $this->craftingDataCache;
+		return $this->craftingDataCache[$protocol];
 	}
 
 	/**
@@ -225,6 +244,10 @@ class CraftingManager{
 		$this->furnaceRecipes[$input->getId() . ":" . ($input->hasAnyDamageValue() ? "?" : $input->getDamage())] = $recipe;
 		$this->craftingDataCache = null;
 	}
+
+	public function registerBrewingRecipe(BrewingRecipe $recipe): void {
+	    $this->brewingRecipes[$recipe->getOutput()] = $recipe;
+    }
 
 	/**
 	 * @param Item[]       $outputs

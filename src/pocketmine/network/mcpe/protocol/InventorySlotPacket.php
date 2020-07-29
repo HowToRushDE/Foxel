@@ -44,9 +44,12 @@ class InventorySlotPacket extends DataPacket{
 		$this->item = $this->getSlot();
 	}
 
-	protected function encodePayload(){
+	protected function encodePayload() {
 		$this->putUnsignedVarInt($this->windowId);
 		$this->putUnsignedVarInt($this->inventorySlot);
+		if($this->protocol >= ProtocolInfo::PROTOCOL_16) {
+		    $this->putVarInt($this->item->isNull() ? 0 : 1);
+        }
 		$this->putSlot($this->item);
 	}
 
